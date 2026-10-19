@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Noche de estacas — cazadores contra vampiros, juego de fiesta gratis</title>
+<meta name="description" content="Juego de fiesta gratis de cazadores contra vampiros, sin narrador. Los vampiros se conocen entre ellos y muerden de noche; de día se vota a quién clavar la estaca. Los fantasmas siguen votando y protegiendo. En un móvil o cada uno con el suyo.">
+<meta name="keywords" content="juego de vampiros, cazadores de vampiros, juego de fiesta, deducción social, juego sin narrador, juego para grupos, juego de móvil para fiestas">
+<link rel="canonical" href="https://adrianezd.github.io/noche-de-estacas/">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="icon-512.png">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0c0609">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta property="og:title" content="Noche de estacas — cazadores contra vampiros">
+<meta property="og:description" content="Sin narrador: los vampiros muerden de noche y de día se vota la estaca. Los fantasmas siguen jugando. Gratis, en un móvil o cada uno con el suyo.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://adrianezd.github.io/noche-de-estacas/">
+<meta property="og:image" content="https://adrianezd.github.io/noche-de-estacas/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:locale" content="es_ES">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Noche de estacas">
+<meta name="twitter:description" content="Cazadores contra vampiros, sin narrador. Juego de fiesta gratis.">
+<meta name="twitter:image" content="https://adrianezd.github.io/noche-de-estacas/og-image.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="sala.css?v=1">
+<link rel="stylesheet" href="juego.css?v=1">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@graph":[{"@type":"Game","name":"Noche de estacas","description":"Juego de fiesta de deducción social sin narrador: cazadores contra vampiros. Los vampiros muerden de noche, de día se vota a quién clavar la estaca y los eliminados siguen jugando como fantasmas.","genre":["Juego de fiesta","Deducción social"],"url":"https://adrianezd.github.io/noche-de-estacas/","image":"https://adrianezd.github.io/noche-de-estacas/og-image.png","inLanguage":"es","isAccessibleForFree":true,"numberOfPlayers":{"@type":"QuantitativeValue","minValue":5,"maxValue":14},"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}},{"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"¿Hace falta narrador?","acceptedAnswer":{"@type":"Answer","text":"No. Juega todo el mundo: el móvil lleva las noches y el recuento."}},{"@type":"Question","name":"¿Qué hacen los fantasmas?","acceptedAnswer":{"@type":"Answer","text":"Los eliminados siguen votando de día y cada noche velan por alguien: si los vampiros lo muerden, se salva."}},{"@type":"Question","name":"¿Cuántos jugadores hacen falta?","acceptedAnswer":{"@type":"Answer","text":"De 5 a 14. Va mejor de 6 a 10."}}]}]}
+</script>
+</head>
+<body>
+
+<header class="site-header hide-in-game">
+  <div class="hero-badge" aria-hidden="true">🧛</div>
+  <p class="site-kicker">Juego de fiesta · sin narrador</p>
+  <h1>Noche de estacas</h1>
+  <p class="tagline">Sois cazadores de vampiros… pero algunos tenéis colmillos y os conocéis entre vosotros. Nadie hace de narrador: juega todo el mundo.</p>
+  <ul class="hero-chips">
+    <li>👥 5–14 jugadores</li>
+    <li>⏱️ 30–60 min</li>
+    <li>👻 Fantasmas</li>
+  </ul>
+</header>
+
+<div class="game-bar" id="game-bar" hidden>
+  <span class="game-bar-title" id="game-bar-title">Día 1</span>
+  <button type="button" class="btn-icon" id="btn-exit">✕ Salir</button>
+</div>
+
+<main>
+  <div id="game-app">
+    <section class="screen" data-screen="setup">
+      <h2 class="visually-hidden">Preparar partida</h2>
+
+      <div class="card">
+        <h3 class="card-title">👥 Jugadores</h3>
+        <div class="stepper-row">
+          <span class="stepper-label" id="player-count-label">Jugadores</span>
+          <div class="stepper" role="group" aria-labelledby="player-count-label">
+            <button type="button" id="btn-player-minus" class="stepper-btn" aria-label="Restar jugador">−</button>
+            <span class="stepper-value" id="player-count-value" aria-live="polite">7</span>
+            <button type="button" id="btn-player-plus" class="stepper-btn" aria-label="Sumar jugador">+</button>
+          </div>
+        </div>
+        <details class="fold">
+          <summary>✏️ Nombres <small>opcional</small></summary>
+          <div class="names-grid" id="names-grid"></div>
+          <button type="button" class="mini-btn" id="btn-shuffle-names">🔀 Mezclar</button>
+        </details>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">🎭 Papeles <span class="card-aside" id="role-summary"></span></h3>
+        <div class="stepper-row">
+          <span class="stepper-label" id="vamp-count-label">🧛 Vampiros <small id="vamp-hint">Máximo 2</small></span>
+          <div class="stepper" role="group" aria-labelledby="vamp-count-label">
+            <button type="button" id="btn-vamp-minus" class="stepper-btn" aria-label="Restar vampiro">−</button>
+            <span class="stepper-value" id="vamp-count-value" aria-live="polite">2</span>
+            <button type="button" id="btn-vamp-plus" class="stepper-btn" aria-label="Sumar vampiro">+</button>
+          </div>
+        </div>
+        <label class="switch-row">
+          <span>Modo avanzado <small>Rastreadora, herbolario, veterano, conde y sombra</small></span>
+          <input type="checkbox" class="switch" id="opt-advanced">
+        </label>
+        <p class="setup-hint">En el modo básico solo hay 🏹 cazadores y 🧛 vampiros.</p>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">⚙️ Opciones</h3>
+        <div class="stepper-row">
+          <span class="stepper-label" id="timer-label">Tiempo de debate <small id="timer-hint">Con cronómetro</small></span>
+          <div class="stepper" role="group" aria-labelledby="timer-label">
+            <button type="button" id="btn-time-minus" class="stepper-btn" aria-label="Menos tiempo">−</button>
+            <span class="stepper-value" id="time-value" aria-live="polite">3′</span>
+            <button type="button" id="btn-time-plus" class="stepper-btn" aria-label="Más tiempo">+</button>
+          </div>
+        </div>
+        <label class="switch-row"><span>Revelar el papel al caer <small>Se dice qué era quien muere</small></span><input type="checkbox" class="switch" id="opt-reveal"></label>
+        <label class="switch-row"><span>Votación secreta <small>Cada uno vota en privado pasando el móvil</small></span><input type="checkbox" class="switch" id="opt-secret-vote"></label>
+        <label class="switch-row"><span>Sonido</span><input type="checkbox" class="switch" id="opt-sound"></label>
+        <label class="switch-row"><span>Vibración</span><input type="checkbox" class="switch" id="opt-vibrate"></label>
+      </div>
+
+      <button type="button" id="btn-start-game" class="btn btn-primary btn-large btn-start">Repartir papeles 🎲</button>
+    </section>
+
+    <section class="screen" data-screen="play" hidden>
+      <div id="play-root"></div>
+    </section>
+  </div>
+
+  <section class="info-section hide-in-game" id="como-jugar">
+    <h2>Cómo jugar</h2>
+    <ol class="how-to-list">
+      <li><strong>Reparto.</strong> Cada uno ve en secreto su papel. Los vampiros saben quiénes son los suyos.</li>
+      <li><strong>Noche.</strong> Los vampiros eligen a quién morder. Todo el mundo toca algo en el móvil, también los fantasmas, para que nadie se delate.</li>
+      <li><strong>Amanecer.</strong> Se sabe si alguien ha caído o si lo salvaron el ajo o un fantasma.</li>
+      <li><strong>Día.</strong> Debate con cronómetro y votación: el más votado recibe la estaca. Votan los vivos y los fantasmas.</li>
+      <li><strong>Fantasmas.</strong> Quien cae sigue en la partida: habla, vota de día y cada noche vela por alguien. Si los vampiros lo muerden, se salva.</li>
+      <li><strong>Final.</strong> Ganan los cazadores si no queda ningún vampiro vivo. Ganan los vampiros si llegan a ser tantos como los vivos del otro equipo.</li>
+    </ol>
+  </section>
+
+  <section class="info-section hide-in-game" id="papeles">
+    <h2>Papeles</h2>
+    <ul class="feature-grid">
+      <li><strong>🏹 Cazador</strong>Sin poderes, pero con voto. Escucha, sospecha y convence.</li>
+      <li><strong>🧛 Vampiro</strong>Cada noche, con los suyos, muerde a alguien. De día disimula.</li>
+      <li><strong>🔍 Rastreadora</strong>Avanzado. Cada noche descubre si alguien es vampiro.</li>
+      <li><strong>🧄 Herbolario</strong>Avanzado. Cada noche protege a alguien con ajo, sin repetir dos noches seguidas.</li>
+      <li><strong>🪵 Veterano</strong>Avanzado. Una vez por partida, de día, clava su estaca sin votación. Si falla, cae él.</li>
+      <li><strong>🦇 Conde</strong>Avanzado. Una vez por partida convierte a su víctima en vampiro en vez de matarla.</li>
+      <li><strong>🌑 Sombra</strong>Avanzado. Vampira que la rastreadora ve como cazadora.</li>
+    </ul>
+  </section>
+
+  <section class="info-section hide-in-game" id="faq">
+    <h2>Preguntas frecuentes</h2>
+    <details class="faq-item"><summary>¿Hace falta narrador?</summary><p>No. Juega todo el mundo: el móvil lleva las noches y el recuento.</p></details>
+    <details class="faq-item"><summary>¿Cuántos vampiros pongo?</summary><p>Uno hasta 6 jugadores, dos de 7 a 9 y tres a partir de 10. El juego lo sugiere solo.</p></details>
+    <details class="faq-item"><summary>¿Se puede jugar cada uno con su móvil?</summary><p>Sí: elige «Con código de sala». Uno crea la sala y el resto entra con el código.</p></details>
+    <details class="faq-item"><summary>¿Es gratis?</summary><p>Sí, sin anuncios ni descargas.</p></details>
+  </section>
+</main>
+
+<footer class="site-footer hide-in-game">
+  <nav class="more-games" aria-label="Más juegos de fiesta">
+    <h2>Más juegos de fiesta</h2>
+    <a class="game-link" href="https://adrianezd.github.io/quien-es-el-impostor/"><span class="game-link-emoji" aria-hidden="true">🕵️</span><span><strong>¿Quién es el Impostor?</strong><span>Todos saben la palabra secreta menos uno.</span></span></a>
+    <a class="game-link" href="https://adrianezd.github.io/dibujo-impostor/"><span class="game-link-emoji" aria-hidden="true">✏️</span><span><strong>Dibujo Impostor</strong><span>Todos dibujan lo mismo salvo el impostor, que no sabe que lo es.</span></span></a>
+    <a class="game-link" href="https://adrianezd.github.io/el-dato-falso/"><span class="game-link-emoji" aria-hidden="true">🤥</span><span><strong>El Dato Falso</strong><span>Trivia en la que a los mentirosos se les cuela un dato falso.</span></span></a>
+    <a class="game-link" href="https://adrianezd.github.io/el-pueblo-duerme/"><span class="game-link-emoji" aria-hidden="true">🐺</span><span><strong>El pueblo duerme</strong><span>Lobos contra aldeanos: de noche atacan, de día se vota.</span></span></a>
+    <a class="game-link" href="https://adrianezd.github.io/el-campanario/"><span class="game-link-emoji" aria-hidden="true">🔔</span><span><strong>El campanario</strong><span>Juego de deducción social con narrador automático: el demonio y sus esbirros contra el pueblo.</span></span></a>
+    <a class="game-link is-current" href="https://adrianezd.github.io/noche-de-estacas/" aria-current="page"><span class="game-link-emoji" aria-hidden="true">🧛</span><span><strong>Noche de estacas</strong><span>Cazadores contra vampiros, sin narrador. Los fantasmas siguen votando y protegiendo.</span></span></a>
+    <a class="game-link" href="https://adrianezd.github.io/el-ritual/"><span class="game-link-emoji" aria-hidden="true">🕯️</span><span><strong>El ritual</strong><span>Investigadores contra sectarios ocultos en una mansión: diez rondas para frenar el ritual.</span></span></a>
+    <a class="game-link" href="https://adrianezd.github.io/el-presidente-y-la-bomba/"><span class="game-link-emoji" aria-hidden="true">💣</span><span><strong>El presidente y la bomba</strong><span>Dos salas, rondas cronometradas e intercambio de rehenes: salva al presidente o hazlo volar.</span></span></a>
+    <a class="game-link" href="https://adrianezd.github.io/el-club-clandestino/"><span class="game-link-emoji" aria-hidden="true">🎭</span><span><strong>El club clandestino</strong><span>Fiestas secretas, sospecha creciente y chivatos que venden al club. Juego largo de faroles.</span></span></a>
+  </nav>
+  <p>Noche de estacas es un juego de fiesta original, no afiliado a ninguna marca comercial.</p>
+</footer>
+
+<script src="kit.js?v=1"></script>
+<script src="sala.js?v=1"></script>
+<script src="mesa.js?v=1"></script>
+<script src="script.js?v=1"></script>
+</body>
+</html>
