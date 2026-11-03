@@ -119,6 +119,7 @@ const Sala = (() => {
       let msg;
       try { msg = JSON.parse(JSON.parse(e.data).message); } catch (err) { return; }
       if (!msg || msg.f === S.pid) return; // los propios mensajes vuelven: se ignoran
+      if (G.onMessage && !CORE_KINDS.includes(msg.k)) { gameMsg(msg, false); return; }
       if (isHost()) hostHandle(msg);
       else if (S.role === 'guest') guestHandle(msg);
     };
@@ -129,6 +130,23 @@ const Sala = (() => {
     S.es.onmessage = null;
     S.es.close();
     S.es = null;
+  }
+
+  // Mensajes propios del juego (dibujos…): llegan a todos los móviles. El juego
+  // los guarda y, en el anfitrión, puede cambiar la partida (room.x) y pedir que se reenvíe.
+  const CORE_KINDS = ['join', 'leave', 'act', 'vote', 'state', 'full'];
+  function gameMsg(msg, local) {
+    const v = S.view;
+    if (!v || !S.role) return;
+    const from = v.order ? v.order.indexOf(msg.f) : -1;
+    const changed = G.onMessage(msg, { host: isHost(), room: isHost() ? S.room : null, view: v, from, me: myIndex(v), local });
+    if (changed && isHost() && S.room) broadcast(changed === 'now');
+  }
+  // enviar un mensaje del juego: se procesa también en el propio móvil
+  function post(msg) {
+    if (!S.role) return undefined;
+    gameMsg(Object.assign({}, msg, { f: S.pid }), true);
+    return send(Object.assign({}, msg));
   }
 
   /* ------------------------------ anfitrión ------------------------------ */
@@ -237,7 +255,7 @@ const Sala = (() => {
     const r = S.room;
     if (r.players.length < MIN_PLAYERS) { Kit.toast(`Hacen falta al menos ${MIN_PLAYERS} jugadores`); return; }
     const order = Kit.shuffled(r.players.map((p) => p.id));
-    if (G.custom) {
+    if (G.custom && (!G.custom.when || G.custom.when())) {
       const g = G.custom.start(order.length);
       if (!g || g.error) { Kit.toast(g && g.error ? g.error : 'No se pudo empezar'); return; }
       r.rn += 1;
@@ -259,6 +277,7 @@ const Sala = (() => {
     r.cards = dealt.cards;
     r.sp = dealt.special;
     r.info = dealt.info || null;
+    r.x = dealt.x || null;
     r.round = {
       title: dealt.title || '', help: dealt.help || '', voteTitle: dealt.voteTitle || '¿Quién es?',
       allowNone: Boolean(dealt.allowNone), noneLabel: dealt.noneLabel || 'Nadie',
@@ -289,7 +308,7 @@ const Sala = (() => {
     broadcast(true);
   }
   function toLobby() {
-    Object.assign(S.room, { ph: 'lobby', order: [], names: [], cards: [], sp: [], info: null, round: null, votes: {}, tm: null, res: null, g: null });
+    Object.assign(S.room, { ph: 'lobby', order: [], names: [], cards: [], sp: [], info: null, round: null, votes: {}, tm: null, res: null, g: null, x: null });
     broadcast(true);
     enterHosting();
   }
@@ -538,9 +557,22 @@ const Sala = (() => {
       }) + leaveBtn() + '</div>';
   }
 
+  // lo que el juego necesita para pintar sus trozos de pantalla
+  function gameCtx(v) {
+    return {
+      v, x: v.x, me: myIndex(v), host: isHost(), name: S.name, names: v.names, sp: v.sp, esc,
+      hostName: hostName(v), card: cardHtml(), timer: timerHtml(v), notInRound: notInRound(),
+      voteBtn: isHost() ? '<button type="button" class="btn btn-primary btn-large" data-sala="vote">Votar 🗳️</button>'
+        : `<p class="setup-hint sala-center">${esc(hostName(v))} abrirá la votación.</p>`
+    };
+  }
+  const extraHtml = (ph, v) => (G.extraHtml ? G.extraHtml(ph, gameCtx(v)) || '' : '');
+
   function playHtml(v) {
     const me = myIndex(v);
     const head = `<p class="sala-round">Ronda ${v.rn}${v.round.title ? ` · ${esc(v.round.title)}` : ''} · Sala ${esc(S.code)}</p>`;
+    // el juego pinta su propia pantalla de juego (dibujar en el móvil…)
+    if (G.playBody) return `<div class="center-wrap sala-wrap">${head}${G.playBody(gameCtx(v))}${leaveBtn()}</div>`;
     return '<div class="center-wrap sala-wrap">' + head +
       (me !== -1 ? `<h2 class="reveal-player">${esc(S.name)}</h2><p class="reveal-warning">🤫 Que nadie más mire tu pantalla</p>${cardHtml()}` : notInRound()) +
       '<div class="starter-card"><span class="starter-emoji" aria-hidden="true">🎲</span><div><p>Empieza</p>' +
@@ -565,7 +597,7 @@ const Sala = (() => {
         (v.round.allowNone ? `<button type="button" class="sala-vote is-none${mine === 'none' ? ' is-selected' : ''}" data-vote="none">${esc(v.round.noneLabel)}</button>` : '') +
         '</div>';
     }
-    return `<div class="center-wrap sala-wrap"><h2 class="screen-title">${esc(v.round.voteTitle)}</h2>${body}` +
+    return `<div class="center-wrap sala-wrap"><h2 class="screen-title">${esc(v.round.voteTitle)}</h2>${extraHtml('vote', v)}${body}` +
       `<p class="sala-count">🗳️ Han votado <strong>${voted}</strong> de ${v.order.length}</p>` +
       (isHost() ? `<button type="button" class="btn btn-primary btn-large" data-sala="reveal">Revelar ${esc(v.round.who.many)}</button>`
         : `<p class="setup-hint sala-center">${esc(hostName(v))} revelará el resultado.</p>`) +
@@ -603,7 +635,7 @@ const Sala = (() => {
       `<div class="verdict is-${type}"><span class="verdict-emoji" aria-hidden="true">${emoji}</span>` +
       `<h2 class="verdict-title">${esc(title)}</h2><p class="verdict-text">${text}</p></div>` +
       `<div class="card reveal-box">${G.resultsHtml(v.info, { names: v.names, special: v.sp, cards: v.cards, esc })}` +
-      `<p class="vote-summary">${esc(votes)}</p></div>` +
+      `<p class="vote-summary">${esc(votes)}</p></div>` + extraHtml('res', v) +
       (isHost() ? '<div class="results-actions"><button type="button" class="btn btn-primary btn-large" data-sala="again">Siguiente ronda ▶</button>' +
         '<button type="button" class="btn btn-secondary btn-large" data-sala="lobby">Cambiar ajustes</button></div>'
         : `<p class="setup-hint sala-center">⏳ Esperando a que ${esc(hostName(v))} empiece otra ronda.</p>`) +
@@ -644,6 +676,7 @@ const Sala = (() => {
     if (!isHost() || v.ph !== 'lobby') { if (document.body.dataset.screen !== 'sala') show('sala'); }
     ui.root.innerHTML = html;
     bindRoot();
+    if (G.mounted) G.mounted(v.ph, gameCtx(v));
     tick();
   }
 
@@ -731,6 +764,10 @@ const Sala = (() => {
     if (!disp || !v || !v.tm || !S.role) return;
     const left = isHost() ? timerLeft(v.tm) : (v.tm.run ? Math.max(0, v.tm.left - (Date.now() - S.viewAt) / 1000) : v.tm.left);
     disp.textContent = Kit.formatTime(Math.ceil(left));
+    if (left <= 0 && G.onTimeUp) {
+      const key = `${v.rid}-${v.rn}-${v.ph}`;
+      if (S.timeUpKey !== key) { S.timeUpKey = key; G.onTimeUp(v.ph); }
+    }
     disp.classList.toggle('is-finished', left <= 0);
     const ring = $('sala-ring');
     if (ring) {
@@ -877,10 +914,16 @@ const Sala = (() => {
      *           seconds, voteTitle, allowNone, noneLabel, who } o { error },
      *  resultsHtml(info, { names, special, cards, esc }): lo que se revela,
      *  onRoundEnd(info): opcional.
+     *  Opcional para juegos que mandan sus propios datos (Dibujo Impostor):
+     *    deal(n) puede devolver x: estado extra de la ronda (pequeño), que viaja con la sala,
+     *    playBody(ctx) → html de la pantalla de juego, extraHtml('vote'|'res', ctx) → html extra,
+     *    mounted(fase, ctx) tras pintar, onTimeUp(fase) al acabar el cronómetro,
+     *    onMessage(msg, { host, room, view, from, me, local }) → true | 'now' si el anfitrión cambió room.x.
      *  custom: juego por fases en vez de carta + votación (El pueblo duerme):
      *    { start(n) → estado, act(estado, jugador, acción, esAnfitrión) → null | { timer? },
      *      render({ g, me, host, names, esc, hostName, timer, card }) → html (botones con data-act),
-     *      card(estado, jugador, names) → carta, phaseKey(estado), phaseFx(estado, jugador) }
+     *      card(estado, jugador, names) → carta, phaseKey(estado), phaseFx(estado, jugador),
+     *      when() opcional: si devuelve false, esa ronda es de carta + votación (deal) }
      */
     configure(game) {
       G = Object.assign({ maxPlayers: 15, minPlayers: 3, timerStep: 30, contentClass: 'role-content', extraClass: 'role-extra' }, game);
@@ -890,6 +933,11 @@ const Sala = (() => {
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
       else mount();
     },
-    isHosting: () => isHost()
+    isHosting: () => isHost(),
+    post,
+    view: () => S.view,
+    me: () => (S.view && S.view.order ? myIndex(S.view) : -1),
+    hostDo: (a) => { if (isHost() && S.room && S.room.ph !== 'lobby') action(a); },
+    rerender: () => { S.lastHtml = ''; render(); }
   };
 })();
