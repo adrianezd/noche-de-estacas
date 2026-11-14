@@ -1,10 +1,9 @@
 'use strict';
 
 /* Service worker: guarda el juego en el móvil para poder jugar sin conexión.
-   Estrategia «stale-while-revalidate»: responde con la copia guardada y la
-   actualiza en segundo plano, así los cambios llegan en la siguiente visita. */
+   Primero la red y, sin conexión, la copia guardada. */
 
-const CACHE = 'noche-de-estacas-v3';
+const CACHE = 'noche-de-estacas-v4';
 const CORE = ['./', 'index.html', 'style.css', 'juego.css', 'kit.js', 'sala.js', 'sala.css', 'mesa.js', 'script.js', 'favicon.svg', 'manifest.json', 'icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -27,17 +26,19 @@ self.addEventListener('fetch', (event) => {
     url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
   if (!cacheable) return;
 
+  // Archivos del juego: primero la red, para que nadie se quede con una versión
+  // antigua (en una sala todos tienen que llevar la misma); sin conexión, la copia
+  // guardada. Las fuentes: primero la copia guardada.
+  const sameOrigin = url.origin === self.location.origin;
   event.respondWith(
-    caches.open(CACHE).then((cache) =>
-      cache.match(request, { ignoreSearch: url.origin === self.location.origin }).then((cached) => {
-        const network = fetch(request)
-          .then((response) => {
-            if (response && (response.ok || response.type === 'opaque')) cache.put(request, response.clone());
-            return response;
-          })
-          .catch(() => cached);
-        return cached || network;
-      })
-    )
+    caches.open(CACHE).then((cache) => {
+      // no-cache: pregunta al servidor si hay versión nueva (sin esperar a que caduque la caché del navegador)
+      const fromNetwork = () => fetch(sameOrigin ? new Request(request.url, { cache: 'no-cache' }) : request).then((response) => {
+        if (response && (response.ok || response.type === 'opaque')) cache.put(request, response.clone());
+        return response;
+      });
+      if (!sameOrigin) return cache.match(request).then((cached) => cached || fromNetwork());
+      return fromNetwork().catch(() => cache.match(request, { ignoreSearch: true }));
+    })
   );
 });

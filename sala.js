@@ -15,29 +15,283 @@
      móvil enseña solo su carta. Se vota desde cada móvil y al revelar
      todos ven el resultado.
 
-   Mensajes entre móviles: ntfy.sh (servicio gratuito, sin cuentas), un
-   canal por sala. Se publican con cache=no: el servidor no los guarda,
-   solo los reciben los móviles conectados. El anfitrión manda: guarda la
-   partida entera y la reenvía a todos cuando cambia algo (y cada minuto,
-   por si a alguien se le escapó un mensaje). Los demás solo envían
-   «entro», «salgo» y su voto.
+   Mensajes entre móviles: SalaRelay (arriba), un canal por sala. El
+   anfitrión manda: guarda la partida entera y la reenvía a todos cuando
+   cambia algo (y cada 20 segundos, por si a alguien se le escapó un
+   mensaje). Los demás solo envían «entro», «salgo» y su voto.
 
    Para que una recarga o un móvil que se duerme no saquen a nadie, la
    sesión (y en el anfitrión la sala) se guarda en sessionStorage, que se
    borra sola al cerrar la pestaña.
    ========================================================================= */
 
+/* ---- RELAY: inicio (mismo bloque en todas las salas) ----
+   Mensajes entre móviles sin servidor propio.
+   - Principal: MQTT por WebSocket en tres servidores públicos a la vez. Se
+     publica en todos los que estén conectados y se descartan los repetidos.
+     Es una conexión permanente: no hay límite de envíos por minuto.
+   - Respaldo: ntfy.sh, para un móvil que no llegue a ningún servidor MQTT
+     (algunas redes bloquean sus puertos). Si alguien va por ntfy, los demás
+     también le escriben por ahí y el anfitrión le reenvía lo que llega por MQTT.
+   Antes todo iba por ntfy.sh, que con todos los móviles en el mismo wifi
+   cortaba los envíos (429) a los pocos minutos de partida. */
+const SalaRelay = (() => {
+  const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt', 'wss://test.mosquitto.org:8081/mqtt'];
+  const NTFY = 'https://ntfy.sh/';
+  const KEEPALIVE = 30;          // segundos que el servidor espera sin noticias
+  const PING_MS = 15000;
+  const DEAD_MS = 45000;         // sin recibir nada en este tiempo, la conexión está muerta
+  const NTFY_PEER_MS = 120000;   // alguien escribió por ntfy hace poco: seguir usándolo
+  const FALLBACK_MS = 6000;      // si en este tiempo no conecta ningún MQTT, se avisa de que vamos por ntfy
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  const rid = (n) => { let s = ''; while (s.length < n) s += Math.random().toString(36).slice(2); return s.slice(0, n); };
+
+  const u16 = (n) => [n >> 8, n & 255];
+  const str = (s) => { const b = enc.encode(s); return [...u16(b.length), ...b]; };
+  function varLen(n) { const o = []; do { let d = n % 128; n = Math.floor(n / 128); if (n > 0) d |= 128; o.push(d); } while (n > 0); return o; }
+  function packet(head, body) {
+    const len = varLen(body.length);
+    const out = new Uint8Array(1 + len.length + body.length);
+    out[0] = head; out.set(len, 1); out.set(body, 1 + len.length);
+    return out;
+  }
+
+  /**
+   * open({ topic, onMessage(msg), onOpen(), bridge() }) → { publish(msg), close(), alive(), poke() }
+   * msg es un objeto; se le añade mid (para quitar repetidos) y tr (por dónde salió).
+   */
+  function open({ topic, onMessage, onOpen, bridge }) {
+    const conns = [];
+    const seen = new Map();
+    let closed = false;
+    let es = null;
+    let lastNtfyPeer = 0;
+    let openTimer = null;
+    let fallbackTimer = null;
+    let fallbackDone = false;    // ya se esperó a MQTT al abrir
+    let everReady = false;
+    let queue = [];              // mensajes esperando a que conecte algún MQTT
+    let flushTimer = null;
+    const openedAt = Date.now();
+    const mqttTopic = `adrianezd/party-sala/${topic}`;
+
+    const ready = () => conns.filter((c) => c.ready);
+    const ntfyNeeded = () => !ready().length || Date.now() - lastNtfyPeer < NTFY_PEER_MS;
+    function announceOpen() {
+      clearTimeout(openTimer);
+      openTimer = setTimeout(() => { if (!closed && onOpen) onOpen(); }, 250);
+    }
+    function isNew(msg) {
+      if (!msg || !msg.mid) return true;
+      if (seen.has(msg.mid)) return false;
+      seen.set(msg.mid, Date.now());
+      if (seen.size > 1500) { const old = Array.from(seen.keys()).slice(0, 500); old.forEach((k) => seen.delete(k)); }
+      return true;
+    }
+    function deliver(msg, via) {
+      if (!isNew(msg)) return;
+      // llega por ntfy sin haber salido por MQTT: ese móvil va por ntfy (o tiene la versión antigua)
+      const ntfyPeer = via === 'ntfy' && msg.tr !== 'm';
+      if (ntfyPeer) lastNtfyPeer = Date.now();
+      // el anfitrión hace de puente entre los que van por MQTT y los que van por ntfy
+      if (bridge && bridge()) {
+        if (via === 'mqtt' && Date.now() - lastNtfyPeer < NTFY_PEER_MS) postNtfy(msg);
+        if (ntfyPeer) sendMqtt(msg);
+      }
+      try { onMessage(msg); } catch (err) { console.error(err); }
+    }
+
+    /* --------------------------- MQTT --------------------------- */
+    function connect(c) {
+      if (closed) return;
+      c.ready = false;
+      c.buf = new Uint8Array(0);
+      let ws;
+      try { ws = new WebSocket(c.url, ['mqtt']); } catch (err) { retry(c); return; }
+      c.ws = ws;
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        c.heard = Date.now();
+        ws.send(packet(0x10, [...str('MQTT'), 4, 0x02, ...u16(KEEPALIVE), ...str(`ps${rid(16)}`)]));
+      };
+      ws.onmessage = (e) => {
+        c.heard = Date.now();
+        const add = new Uint8Array(e.data);
+        const all = new Uint8Array(c.buf.length + add.length);
+        all.set(c.buf); all.set(add, c.buf.length);
+        c.buf = all;
+        parse(c);
+      };
+      ws.onerror = () => {};
+      ws.onclose = () => { if (c.ws === ws) { c.ready = false; c.ws = null; retry(c); } };
+    }
+    function retry(c) {
+      if (closed) return;
+      clearTimeout(c.retryTimer);
+      c.fails = (c.fails || 0) + 1;
+      c.retryTimer = setTimeout(() => connect(c), Math.min(30000, 1000 * 2 ** Math.min(5, c.fails)));
+    }
+    function parse(c) {
+      const b = c.buf;
+      let i = 0;
+      while (i + 2 <= b.length) {
+        let mul = 1;
+        let len = 0;
+        let j = i + 1;
+        let byte;
+        do {
+          if (j >= b.length) { c.buf = b.slice(i); return; }
+          byte = b[j++];
+          len += (byte & 127) * mul;
+          mul *= 128;
+        } while (byte & 128);
+        if (j + len > b.length) break;
+        handle(c, b[i], b.subarray(j, j + len));
+        i = j + len;
+      }
+      c.buf = b.slice(i);
+    }
+    function handle(c, head, body) {
+      const type = head >> 4;
+      if (type === 2) { // CONNACK
+        if (body[1] !== 0) { c.ws.close(); return; }
+        c.ws.send(packet(0x82, [...u16(1), ...str(mqttTopic), 0]));
+      } else if (type === 9) { // SUBACK
+        c.ready = true;
+        c.fails = 0;
+        everReady = true;
+        fallbackDone = true;
+        clearTimeout(fallbackTimer);
+        flush();
+        announceOpen();
+      } else if (type === 3) { // PUBLISH
+        const tl = (body[0] << 8) | body[1];
+        let k = 2 + tl;
+        if ((head >> 1) & 3) k += 2; // con QoS > 0 viene un identificador
+        let msg;
+        try { msg = JSON.parse(dec.decode(body.subarray(k))); } catch (err) { return; }
+        deliver(msg, 'mqtt');
+      }
+    }
+    function sendMqtt(msg) {
+      const data = packet(0x30, [...str(mqttTopic), ...enc.encode(JSON.stringify(msg))]);
+      let sent = 0;
+      ready().forEach((c) => { try { c.ws.send(data); sent += 1; } catch (err) { /* se reconecta sola */ } });
+      return sent;
+    }
+
+    /* --------------------------- ntfy --------------------------- */
+    function postNtfy(msg, tries = 2) {
+      return fetch(`${NTFY}${topic}?cache=no&firebase=no`, { method: 'POST', body: JSON.stringify(msg) })
+        .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return true; })
+        .catch(() => {
+          if (tries <= 0 || closed) return false;
+          return new Promise((ok) => setTimeout(ok, tries === 2 ? 4000 : 9000)).then(() => postNtfy(msg, tries - 1));
+        });
+    }
+    function openNtfy() {
+      if (closed) return;
+      if (es) { es.onopen = null; es.onmessage = null; es.close(); }
+      try { es = new EventSource(`${NTFY}${topic}/sse`); } catch (err) { es = null; return; }
+      // solo cuenta como «abierto» si ya se dio por perdido MQTT
+      es.onopen = () => { if (!ready().length && fallbackDone) announceOpen(); };
+      es.onmessage = (e) => {
+        let msg;
+        try { msg = JSON.parse(JSON.parse(e.data).message); } catch (err) { return; }
+        deliver(msg, 'ntfy');
+      };
+    }
+
+    // vigilancia: ping a los MQTT y reconexión de lo que se haya quedado muerto
+    const watch = setInterval(() => {
+      const now = Date.now();
+      conns.forEach((c) => {
+        if (!c.ws) return;
+        if (now - (c.heard || now) > DEAD_MS) { try { c.ws.close(); } catch (err) { /* nada */ } return; }
+        if (c.ready) { try { c.ws.send(new Uint8Array([0xc0, 0])); } catch (err) { /* nada */ } }
+      });
+      if (!es || es.readyState === 2) openNtfy();
+    }, PING_MS);
+
+    BROKERS.forEach((url) => { const c = { url }; conns.push(c); connect(c); });
+    openNtfy();
+    fallbackTimer = setTimeout(() => {
+      fallbackDone = true;
+      if (ready().length || closed) return;
+      flush();
+      announceOpen();
+    }, FALLBACK_MS);
+
+    function doPublish(msg) {
+      const viaMqtt = ready().length > 0;
+      const out = Object.assign({}, msg, { mid: msg.mid || rid(12), tr: viaMqtt ? 'm' : 'n' });
+      seen.set(out.mid, Date.now());
+      const sent = viaMqtt ? sendMqtt(out) : 0;
+      if (sent && !ntfyNeeded()) return Promise.resolve(true);
+      return postNtfy(out).then((ok) => ok || sent > 0);
+    }
+    // sale lo que esperaba: por MQTT si ya hay alguno, si no por ntfy
+    function flush() {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+      const list = queue;
+      queue = [];
+      list.forEach(({ msg, done }) => doPublish(msg).then(done));
+    }
+
+    return {
+      publish(msg) {
+        if (closed) return Promise.resolve(false);
+        if (ready().length) return doPublish(msg);
+        // sin MQTT ahora mismo: esperar un poco (al abrir, o si se acaba de caer) antes de tirar de ntfy
+        return new Promise((done) => {
+          queue.push({ msg, done });
+          if (!flushTimer) {
+            const wait = fallbackDone ? (everReady ? 3000 : 0) : Math.max(0, openedAt + FALLBACK_MS - Date.now());
+            flushTimer = setTimeout(flush, wait);
+          }
+        });
+      },
+      alive: () => ready().length > 0 || Boolean(es && es.readyState === 1),
+      fast: () => ready().length > 0 && Date.now() - lastNtfyPeer >= NTFY_PEER_MS,
+      // al volver del segundo plano: reconectar ya lo que esté caído
+      poke() {
+        conns.forEach((c) => {
+          if (c.ws && Date.now() - (c.heard || 0) <= DEAD_MS) return;
+          clearTimeout(c.retryTimer);
+          c.fails = 0;
+          if (c.ws) { const ws = c.ws; c.ws = null; c.ready = false; ws.onclose = null; try { ws.close(); } catch (err) { /* nada */ } }
+          connect(c);
+        });
+        if (!es || es.readyState === 2) openNtfy();
+      },
+      close() {
+        closed = true;
+        clearInterval(watch);
+        clearTimeout(openTimer);
+        clearTimeout(fallbackTimer);
+        clearTimeout(flushTimer);
+        conns.forEach((c) => { clearTimeout(c.retryTimer); if (c.ws) { c.ws.onclose = null; try { c.ws.close(); } catch (err) { /* nada */ } } });
+        if (es) { es.onopen = null; es.onmessage = null; es.close(); es = null; }
+      }
+    };
+  }
+  return { open };
+})();
+/* ---- RELAY: fin ---- */
+
 const Sala = (() => {
-  const RELAY = 'https://ntfy.sh/';
+  const SALA_V = 4;             // versión de la sala: si no coincide, alguien tiene el juego antiguo en caché
   const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 5;
   let MIN_PLAYERS = 3;
   const NAME_KEY = 'party-sala-name-v1';
   const JOIN_RETRY_MS = 3000;
   const JOIN_TRIES = 5;
-  const HEARTBEAT_MS = 60000;
-  const BATCH_MS = 1200;
-  const SILENCE_MS = 75000;    // el anfitrión reenvía cada minuto: más silencio que esto es raro       // cambios seguidos (votos, entradas) van en un solo envío
+  const HEARTBEAT_MS = 20000;  // el anfitrión reenvía la sala cada 20 s por si se perdió algo
+  const BATCH_MS = 500;        // cambios seguidos (votos, entradas) van en un solo envío
+  const SILENCE_MS = 45000;    // más silencio que esto es raro: el invitado vuelve a pedir la sala
   const RING_LENGTH = 2 * Math.PI * 54;
 
   let G = null;                // reglas del juego
@@ -48,7 +302,7 @@ const Sala = (() => {
   const S = {
     role: null,                // 'host' | 'guest' | null
     code: '', pid: '', name: '',
-    es: null,
+    relay: null,
     room: null,                // anfitrión: la partida completa
     view: null,                // lo que se pinta (en el anfitrión, la propia sala)
     viewAt: 0, heardAt: 0,
@@ -93,43 +347,35 @@ const Sala = (() => {
 
   /* ------------------------------ red ------------------------------ */
 
-  // si falla (sin red, o el servicio pide calma: unos 12 envíos por minuto
-  // y conexión), se reintenta a los 5 y a los 10 segundos
-  function send(msg, tries = 2) {
+  function send(msg) {
     msg.f = S.pid;
-    const code = S.code;
-    const body = JSON.stringify(msg);
-    return fetch(`${RELAY}${topic(code)}?cache=no&firebase=no`, { method: 'POST', body })
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); })
-      .catch(() => {
-        if (tries <= 0 || S.code !== code || !S.role) { Kit.toast('📡 Sin conexión'); return undefined; }
-        Kit.toast('📡 Sin conexión, reintentando…');
-        return new Promise((ok) => setTimeout(ok, tries === 2 ? 5000 : 10000)).then(() => send(msg, tries - 1));
-      });
+    if (!S.relay) return Promise.resolve(false);
+    return S.relay.publish(msg).then((ok) => {
+      if (!ok && S.role) Kit.toast('📡 Sin conexión');
+      return ok;
+    });
   }
   function subscribe() {
     unsubscribe();
-    const es = new EventSource(`${RELAY}${topic(S.code)}/sse`);
-    S.es = es;
-    es.onopen = () => {
-      if (S.role === 'guest') sendJoin();
-      else if (isHost()) broadcast(true);
-    };
-    es.onmessage = (e) => {
-      let msg;
-      try { msg = JSON.parse(JSON.parse(e.data).message); } catch (err) { return; }
-      if (!msg || msg.f === S.pid) return; // los propios mensajes vuelven: se ignoran
-      if (G.onMessage && !CORE_KINDS.includes(msg.k)) { gameMsg(msg, false); return; }
-      if (isHost()) hostHandle(msg);
-      else if (S.role === 'guest') guestHandle(msg);
-    };
+    S.relay = SalaRelay.open({
+      topic: topic(S.code),
+      bridge: () => isHost(),
+      onOpen: () => {
+        if (S.role === 'guest') sendJoin();
+        else if (isHost()) broadcast(true);
+      },
+      onMessage: (msg) => {
+        if (!msg || msg.f === S.pid) return; // los propios mensajes vuelven: se ignoran
+        if (G.onMessage && !CORE_KINDS.includes(msg.k)) { gameMsg(msg, false); return; }
+        if (isHost()) hostHandle(msg);
+        else if (S.role === 'guest') guestHandle(msg);
+      }
+    });
   }
   function unsubscribe() {
-    if (!S.es) return;
-    S.es.onopen = null;
-    S.es.onmessage = null;
-    S.es.close();
-    S.es = null;
+    if (!S.relay) return;
+    S.relay.close();
+    S.relay = null;
   }
 
   // Mensajes propios del juego (dibujos…): llegan a todos los móviles. El juego
@@ -159,7 +405,7 @@ const Sala = (() => {
     S.pid = S.pid || randId(10);
     S.name = name;
     S.room = {
-      rid: randId(8), seq: 0, host: S.pid, players: [{ id: S.pid, n: name }],
+      rid: randId(8), seq: 0, sv: SALA_V, host: S.pid, players: [{ id: S.pid, n: name }],
       ph: 'lobby', rn: 0, order: [], names: [], cards: [], sp: [], info: null, round: null,
       first: 0, dir: 1, votes: {}, tm: null, res: null
     };
@@ -179,15 +425,20 @@ const Sala = (() => {
     const r = S.room;
     if (msg.k === 'join') {
       const n = cleanName(msg.n) || 'Jugador';
-      const p = r.players.find((x) => x.id === msg.f);
+      let p = r.players.find((x) => x.id === msg.f);
       if (p) {
         p.n = uniqueName(n, p.id);
       } else {
         if (r.players.length >= G.maxPlayers) { send({ k: 'full', to: msg.f }); return; }
-        r.players.push({ id: msg.f, n: uniqueName(n, msg.f) });
+        p = { id: msg.f, n: uniqueName(n, msg.f) };
+        r.players.push(p);
         Kit.sfx.tap();
-        Kit.toast(`👋 ${r.players[r.players.length - 1].n} ha entrado`);
+        Kit.toast(`👋 ${p.n} ha entrado`);
       }
+      // con el juego antiguo en caché no puede jugar bien: que recargue
+      const old = msg.sv !== SALA_V;
+      if (old && !p.old) Kit.toast(`⚠️ ${p.n} tiene una versión antigua: que recargue la página`);
+      if (old) p.old = 1; else delete p.old;
       playersChanged();
       broadcast(true);
     } else if (msg.k === 'leave') {
@@ -380,7 +631,7 @@ const Sala = (() => {
   }
   function sendJoin() {
     clearTimeout(S.joinTimer);
-    send({ k: 'join', n: S.name });
+    send({ k: 'join', n: S.name, sv: SALA_V });
     if (S.joined) return;
     S.joinTries += 1;
     S.joinTimer = setTimeout(() => {
@@ -404,6 +655,15 @@ const Sala = (() => {
     const s = msg.s;
     const v = S.view;
     if (v && v.rid === s.rid && s.seq <= v.seq) return; // repetido o atrasado
+    if (s.sv !== SALA_V) {
+      // versiones distintas: si la nuestra es la antigua, recargar una vez para coger la nueva
+      if ((s.sv || 0) > SALA_V && !sessionStorage.getItem(`${sessionKey}-reload`)) {
+        try { sessionStorage.setItem(`${sessionKey}-reload`, '1'); } catch (err) { /* nada */ }
+        location.reload();
+        return;
+      }
+      if (!S.warnedOld) { S.warnedOld = true; Kit.toast('⚠️ Alguien tiene otra versión del juego: recargad la página'); }
+    }
     if (s.ph === 'closed') {
       if (S.joined) endAsGuest('😴', 'Sala cerrada', 'Quien creó la sala la ha cerrado.');
       return;
@@ -496,6 +756,7 @@ const Sala = (() => {
       `<li><span class="sala-pname">${esc(p.n)}</span>` +
       (p.id === v.host ? '<span class="sala-tag">👑 Anfitrión</span>' : '') +
       (p.id === S.pid && p.id !== v.host ? '<span class="sala-tag">Tú</span>' : '') +
+      (p.old ? '<span class="sala-tag is-old">⚠️ Debe recargar</span>' : '') +
       (canKick && p.id !== S.pid ? `<button type="button" class="mini-btn" data-kick="${esc(p.id)}" aria-label="Quitar a ${esc(p.n)}">Quitar</button>` : '') +
       '</li>').join('') + '</ul>';
   }
@@ -779,8 +1040,9 @@ const Sala = (() => {
   // al volver a la pestaña (el móvil se había dormido): reconectar y pedir la sala
   function onVisible() {
     if (document.hidden || !S.role) return;
-    if (!S.es || S.es.readyState === 2) subscribe();
-    else if (S.role === 'guest') sendJoin();
+    if (!S.relay) { subscribe(); return; }
+    S.relay.poke();
+    if (S.role === 'guest') sendJoin();
     else broadcast(true);
   }
 
@@ -936,6 +1198,8 @@ const Sala = (() => {
     isHosting: () => isHost(),
     post,
     view: () => S.view,
+    // mensajes rápidos y sin límite (MQTT): se pueden mandar cosas en directo
+    fast: () => Boolean(S.relay && S.relay.fast()),
     me: () => (S.view && S.view.order ? myIndex(S.view) : -1),
     hostDo: (a) => { if (isHost() && S.room && S.room.ph !== 'lobby') action(a); },
     rerender: () => { S.lastHtml = ''; render(); }

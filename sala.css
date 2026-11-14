@@ -174,3 +174,6 @@ img, svg, canvas { max-width: 100%; }
 @media (hover: hover) {
   .mode-card:hover, .option-pill:hover, .vote-main:hover { border-color: rgba(var(--accent-rgb), 0.55); }
 }
+
+/* jugador con el juego antiguo en caché */
+.sala-tag.is-old { background: rgba(var(--danger-rgb), 0.25); }
